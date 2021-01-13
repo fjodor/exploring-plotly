@@ -1,0 +1,164 @@
+---
+title: "Plotly: Linking two plots"
+output:
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: fill
+    theme: spacelab
+    source_code: embed
+    fontsize: 16pt
+---
+
+Packages and Data: WDI
+=======================
+
+We're using data from **The World Bank**: *World Development Indicators*, WDI.
+
+The data is accessed via the **WDI R package**. To make sure we get the newest list of available data series, we update the old list stored in the package with the current one from the website using the *WDIcache()* function.
+
+```{r setup}
+
+library(knitr)
+library(kableExtra)
+library(flexdashboard)
+library(WDI)
+library(tidyverse)
+library(plotly)
+library(crosstalk)
+library(ggthemes)
+
+knitr::opts_chunk$set(echo = FALSE)
+
+# cache <- WDIcache()
+# 
+# data_org <- WDI(country = "all",
+#             indicator = c(mortality_under_5 = "SH.DYN.MORT",
+#                           renewable_energy_consumption = "EG.FEC.RNEW.ZS"),
+#             extra = TRUE,
+#             cache = cache)
+# 
+# saveRDS(data_org, "WDI_mort-under-5.rds")
+
+data_org <- readRDS("WDI_mort-under-5.rds")
+
+data <- data_org %>% 
+  filter(region != "Aggregates") %>% 
+  na.omit()
+
+data %>% 
+  select(country, year, mortality_under_5, region, capital) %>% 
+  head() %>% 
+  kbl() %>% 
+  kable_paper("hover", full_width = FALSE,
+              lightable_options = "striped",
+              font_size = 18)
+
+```
+
+The indicator we're interested in is *Mortality rate, under-5 (per 1,000 live births)*.
+
+
+ggplot2 and ggplotly
+====================
+
+A quick start can be made using a static ggplot2 diagram. Until quite recently, I only used plotly via the ggplotly() function to turn a static plot into an interactive one with mouse-over-effects, like this:
+
+Column
+------
+
+```{r static-plot}
+
+p <- ggplot(data, aes(x = year, y = mortality_under_5, group = country)) +
+  geom_line(color = "blue") +
+  theme_economist_white() +
+  labs(title = "Mortality by Year",
+       x = "Year",
+       y = "Mortality Rate under-5 per 1,000 live births)",
+       caption = "Data Source: World Bank, World Development Indicators (WDI),
+                  obtained via the WDI R package, version 2.7.1")
+
+p
+
+```
+
+That's a lot of lines! Hard to get insight from such a plot.
+
+Column
+------
+
+```{r ggplotly}
+
+ggplotly(p)
+
+# ggplotly(p) %>% 
+#   layout(annotations = list(
+#     x = 2016, y = 250, xanchor = 'right', 
+#     showarrow = FALSE, 
+#     # xshift = 0, yshift = 0, xref = 'paper', yref = 'paper',
+#     text = "Data Source: World Bank, World Development Indicators (WDI),
+#                          obtained via the WDI R package, version 2.7.1"),
+#     font = list(size = 11)
+#     )
+
+```
+
+This is very simple! Just assign the ggplot2 call to an object (p) and pass it to plotly's *ggplotly()* function.
+
+Making use of the mouse-over-effects, we can at least discover that the noticeable spikes relate to tragic events in Rwanda and Haiti respectively. However, it is still not very practical to get an overview of the data with so many countries in one plot.
+
+We could resort to facetting (e. g. by region), but today we'd like to take a different approach.
+
+
+plotly and crosstalk: Select Regions interactively
+==================================================
+
+```{r plotly-crosstalk}
+
+shared_data <- SharedData$new(data, key = ~region)
+
+p1 <- shared_data %>% 
+  plot_ly() %>% 
+  group_by(region) %>% 
+  summarise(avg_mort = round(mean(mortality_under_5, na.rm = TRUE), 1)) %>% 
+  add_markers(x = ~avg_mort, y = ~region, size = 2,
+              hoverinfo = "text",
+              text = ~paste("Region:", region,
+                            "<br>Average mortality rate, under-5 (per 1,000 live births):", avg_mort)) %>% 
+  layout(xaxis = list(title = "Average Mortality Rate,\nunder-5 (per 1,000 live births)"))
+
+p2 <- shared_data %>% 
+  plot_ly(x = ~year, y = ~mortality_under_5, ids = ~country,
+          hoverinfo = "text",
+          text = ~paste("Country:", country,
+                        "<br>Region:", region,
+                        "<br>Year:", year,
+                        "<br>Mortality rate, under-5 (per 1,000 live births):", mortality_under_5)) %>% 
+  group_by(country) %>% 
+  add_lines(color = I("darkgrey")) %>% 
+  layout(xaxis = list(title = "Year"), yaxis = list(title = "Mortality Rate, under-5 (per 1,000 live births"),
+         title = list(text = "Mortality under-5 by Year"))
+
+cols <- toRGB(RColorBrewer::brewer.pal(3, "Dark2"))
+
+p <- subplot(p1, p2, shareX = FALSE, shareY = FALSE, titleX = TRUE) %>% 
+  hide_legend() %>%
+  highlight(on = "plotly_click", off = "plotly_doubleclick",
+            dynamic = TRUE, color = cols, selectize = TRUE)
+
+# Hack from https://stackoverflow.com/questions/36988379/adjust-axis-positions-ggplot2-facets
+
+p$x$layout$margin$l <- p$x$layout$margin$l + 90
+p$x$layout$margin$b <- p$x$layout$margin$b + 90
+
+p
+
+```
+
+Notes
+=====
+
+The **crosstalk** package is a great companion to **plotly**, enabling us to link two charts interactively. Both packages were created by **Carson Sievert**. See *help(package = "plotly")* / *help(package = "crosstalk")* to see further contributors.
+
+To link charts, we need to set up a **Shared Data Object**. This is based on the R6 system for object oriented programming in R.
+
+Next, we create two plots. Note that now we employ the specific plotly syntax, which requires the tilde ~ to specify variables, and uses the pipe %>% rather than the + operator like ggplot2.
