@@ -1,0 +1,163 @@
+---
+title: "Plotly: Zwei interaktive Diagramme verknüpfen"
+output:
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: fill
+    theme: spacelab
+    source_code: embed
+    fontsize: 16pt
+---
+
+Daten: WDI
+==========
+
+Wir nutzen Daten der **World Bank**: *World Development Indicators*, WDI.
+
+Der Datenzugriff erfolgt bequem mit dem **WDI-Paket**. Um die aktuelle Liste der verfügbaren Datenreihen abzurufen, aktualisieren wir die Liste, die im Paket enthalten ist, von der Webseite mit der *WDIcache()*-Funktion.
+
+```{r setup}
+
+library(knitr)
+library(kableExtra)
+library(flexdashboard)
+library(WDI)
+library(tidyverse)
+library(plotly)
+library(crosstalk)
+library(ggthemes)
+
+knitr::opts_chunk$set(echo = FALSE)
+
+# cache <- WDIcache()
+# 
+# data_org <- WDI(country = "all",
+#             indicator = c(mortality_under_5 = "SH.DYN.MORT",
+#                           renewable_energy_consumption = "EG.FEC.RNEW.ZS"),
+#             extra = TRUE,
+#             cache = cache)
+# 
+# saveRDS(data_org, "WDI_mort-under-5.rds")
+
+data_org <- readRDS("WDI_mort-under-5.rds")
+
+data <- data_org %>% 
+  filter(region != "Aggregates") %>% 
+  na.omit()
+
+data %>% 
+  select(country, year, mortality_under_5, region, capital) %>% 
+  head() %>% 
+  kbl() %>% 
+  kable_paper("hover", full_width = FALSE,
+              lightable_options = "striped",
+              font_size = 18)
+
+```
+
+Heute interessieren wir uns vor allem für Kindersterblichkeit bis 5 Jahre (pro 1000 Geburten): *Mortality rate, under-5 (per 1,000 live births)*.
+
+
+ggplot2 und ggplotly
+====================
+
+Column
+------
+
+```{r static-plot}
+
+p <- ggplot(data, aes(x = year, y = mortality_under_5, group = country)) +
+  geom_line(color = "blue") +
+  theme_economist_white() +
+  labs(title = "Mortality by Year",
+       x = "Year",
+       y = "Mortality Rate under-5 per 1,000 live births)",
+       caption = "Data Source: World Bank, World Development Indicators (WDI),
+                  obtained via the WDI R package, version 2.7.1")
+
+p
+
+```
+
+Zu viele Linien / Länder!
+
+Column
+------
+
+```{r ggplotly}
+
+ggplotly(p)
+
+# ggplotly(p) %>% 
+#   layout(annotations = list(
+#     x = 2016, y = 250, xanchor = 'right', 
+#     showarrow = FALSE, 
+#     # xshift = 0, yshift = 0, xref = 'paper', yref = 'paper',
+#     text = "Data Source: World Bank, World Development Indicators (WDI),
+#                          obtained via the WDI R package, version 2.7.1"),
+#     font = list(size = 11)
+#     )
+
+```
+Das interaktive Diagramm zu erstellen ist einfach mit *ggplotly()*, dem ein als Objekt gespeichertes statisches ggplot-Diagramm übergeben wird.
+
+Verbesserungsmöglichkeit: *facetting*, d. h. separate Unter-Diagramme z. B. nach Regionen.
+
+Heute wollen wir jedoch einen anderen Ansatz wählen.
+
+
+plotly und crosstalk: Regionen interaktiv auswählen
+===================================================
+
+```{r plotly-crosstalk}
+
+shared_data <- SharedData$new(data, key = ~region)
+
+p1 <- shared_data %>% 
+  plot_ly() %>% 
+  group_by(region) %>% 
+  summarise(avg_mort = round(mean(mortality_under_5, na.rm = TRUE), 1)) %>% 
+  add_markers(x = ~avg_mort, y = ~region, size = 2,
+              hoverinfo = "text",
+              text = ~paste("Region:", region,
+                            "<br>Average mortality rate, under-5 (per 1,000 live births):", avg_mort)) %>% 
+  layout(xaxis = list(title = "Average Mortality Rate,\nunder-5 (per 1,000 live births)"))
+
+p2 <- shared_data %>% 
+  plot_ly(x = ~year, y = ~mortality_under_5, ids = ~country,
+          hoverinfo = "text",
+          text = ~paste("Country:", country,
+                        "<br>Region:", region,
+                        "<br>Year:", year,
+                        "<br>Mortality rate, under-5 (per 1,000 live births):", mortality_under_5)) %>% 
+  group_by(country) %>% 
+  add_lines(color = I("darkgrey")) %>% 
+  layout(xaxis = list(title = "Year"), yaxis = list(title = "Mortality Rate, under-5 (per 1,000 live births"),
+         title = list(text = "Mortality under-5 by Year"))
+
+cols <- toRGB(RColorBrewer::brewer.pal(3, "Dark2"))
+
+p <- subplot(p1, p2, shareX = FALSE, shareY = FALSE, titleX = TRUE) %>% 
+  hide_legend() %>%
+  highlight(on = "plotly_click", off = "plotly_doubleclick",
+            dynamic = TRUE, color = cols, selectize = TRUE)
+
+# Hack from https://stackoverflow.com/questions/36988379/adjust-axis-positions-ggplot2-facets
+
+p$x$layout$margin$l <- p$x$layout$margin$l + 90
+p$x$layout$margin$b <- p$x$layout$margin$b + 90
+
+p
+
+```
+
+Anmerkungen
+===========
+
+**crosstalk** ist eine leistungsfähige Ergänzung zu **plotly**: Man kann damit zwei Diagramme interaktiv verknüpfen.
+
+Beide Pakete wurden von **Carson Sievert** initiiert. *help(package = "plotly")* / *help(package = "crosstalk")*, um Mitstreiter abzurufen.
+
+Um zwei Diagramme zu verknüpfen, benötigen wir ein **Shared Data Object**. Es basiert auf dem **R6**-Paket und dem gleichnamigen System für objektorientiertes Programmieren in R.
+
+Die Diagramme werden mit der *plotly*-Syntax erstellt, die z. B. die Tilde ~ erfordert, um Variablen anzugeben, und mit der Pipe %>% statt, wie ggplot2, mit dem + Operator arbeitet.
