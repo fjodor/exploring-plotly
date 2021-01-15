@@ -1,0 +1,176 @@
+---
+title: "Plotly: Shiny-like selectors without shiny"
+output:
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: fill
+    theme: spacelab
+    source_code: embed
+    fontsize: 16pt
+---
+
+World Bank Data: WDI
+=======================
+
+We're using data from **The World Bank**: *World Development Indicators*, WDI.
+
+The data is accessed via the **WDI R package**. To make sure we get the newest list of available data series, we update the old list stored in the package with the current one from the website using the *WDIcache()* function.
+
+```{r setup}
+
+library(knitr)
+library(kableExtra)
+library(flexdashboard)
+library(WDI)
+library(tidyverse)
+library(plotly)
+library(crosstalk)
+library(ggthemes)
+
+knitr::opts_chunk$set(echo = FALSE)
+
+# cache <- WDIcache()
+
+# Noteworthy indicators, but with many missings:
+# renewable_energy_consumption = "EG.FEC.RNEW.ZS",
+# GDP_per_cap = "6.0.GDPpc_constant",
+# GDP_usd = "6.0.GDP_usd",
+# GNI_per_cap = "6.0.GNIpc"
+# obesity_pct = "HF.STA.OB18.ZS",
+# overweight_pct = "HF.STA.OW18.ZS"
+
+# data_org <- WDI(country = "all",
+#             indicator = c(survival_15_60 = "HD.HCI.AMRT",
+#                           life_expectancy = "SP.DYN.LE00.IN",
+#                           air_pollution = "EN.ATM.PM25.MC.M3"),
+#             extra = TRUE,
+#             cache = cache)
+ 
+# saveRDS(data_org, "WDI_data.rds")
+
+data_org <- readRDS("WDI_data.rds")
+
+data <- data_org %>% 
+  filter(region != "Aggregates") %>% 
+  filter(!is.na(air_pollution) & !is.na(life_expectancy)) %>% 
+  filter(year == 2017)
+
+data %>% 
+  select(country, year, air_pollution, life_expectancy, region, capital) %>% 
+  head() %>% 
+  kbl() %>% 
+  kable_paper("hover", full_width = FALSE,
+              lightable_options = "striped",
+              font_size = 18)
+
+```
+
+The indicators we're interested in are **air pollution**, defined as *mean annual exposure (micrograms per cubic meter)*, and **life expectancy** at birth in years. 
+
+
+ggplot2 and ggplotly
+====================
+
+A quick start can be made using a static ggplot2 diagram. Until quite recently, I only used plotly via the *ggplotly()* function to turn a static plot into an interactive one with mouse-over-effects, like this:
+
+Column
+------
+
+```{r static-plot, fig.width = 9, fig.height = 6}
+
+p <- data %>% 
+  ggplot(aes(x = air_pollution, y = life_expectancy, group = country, color = region)) +
+  geom_point(size = 3, alpha = 0.8) +
+  theme_economist_white(base_family = "Verdana") +
+  # scale_color_economist() +
+  # scale_colour_viridis_d() +
+  scale_color_brewer(palette = "Dark2") +
+  labs(title = "Life Expectancy vs. Air Pollution 2017",
+       x = "Air Pollution
+       Mean Annual Exposure in micrograms per cubic meter",
+       y = "Life Expectancy\nat birth in years",
+       caption = "Data Source: World Bank, World Development Indicators (WDI),
+                  obtained via the WDI R package, version 2.7.1") +
+  theme(legend.position = "right",
+        legend.text = element_text(size = 14),
+        legend.title = element_blank())
+
+p
+
+```
+
+
+Column
+------
+
+```{r ggplotly, fig.width = 9, fig.height = 6}
+
+ggplotly(p)
+
+# ggplotly(p) %>% 
+#   layout(annotations = list(
+#     x = 2016, y = 250, xanchor = 'right', 
+#     showarrow = FALSE, 
+#     # xshift = 0, yshift = 0, xref = 'paper', yref = 'paper',
+#     text = "Data Source: World Bank, World Development Indicators (WDI),
+#                          obtained via the WDI R package, version 2.7.1"),
+#     font = list(size = 11)
+#     )
+
+```
+
+We could use facetting to get a better overview of regions.
+
+However, today we prefer an interactive approach.
+
+plotly and crosstalk: Select Regions interactively
+==================================================
+
+```{r plotly-crosstalk}
+
+shared_data <- data %>% 
+  select(country, air_pollution, life_expectancy, region) %>% 
+  na.omit() %>% 
+  mutate(region = stringr::str_replace(region, "&", "and"),
+          air_pollution = round(air_pollution, 1),
+          life_expectancy = round(life_expectancy, 1)) %>% 
+  SharedData$new()
+
+p <- shared_data %>% 
+  plot_ly(x = ~air_pollution, y = ~life_expectancy, color = ~region,
+              hoverinfo = "text",
+              text = ~paste("Country:", country,
+                            "<br>Region:", region,
+                            "<br>Air Pollution:", air_pollution,
+                            "<br>Life Expectancy:", life_expectancy)) %>% 
+  group_by(region) %>% 
+  add_markers(size = 3) %>%
+  layout(xaxis = list(title = "Air Pollution<br>Mean Annual Exposure in micrograms per cubic meter"),
+         yaxis = list(title = "Life Expectancy<br>at birth in years"),
+         legend = list(font = list(size = 16)))
+
+# Combining several selectors
+
+bscols(widths = c(3, 9),
+       list(
+            filter_checkbox(id = "region", label = "Region",
+                    sharedData = shared_data, group = ~region),
+            filter_select(id = "country", label = "Country",
+                    sharedData = shared_data, group = ~country),
+            filter_slider(id = "slider_ap", label = "Air Pollution",
+                    sharedData = shared_data, column = ~air_pollution),
+            filter_slider(id = "slider_le", label = "Life Expectancy",
+                    sharedData = shared_data, column = ~life_expectancy)
+      ),
+       p)
+
+```
+
+Notes
+=====
+
+The **crosstalk** package is a great companion to **plotly**, enabling us to make interactive selections without using shiny. Both plotly and crosstalk were created by **Carson Sievert**. See *help(package = "plotly")* / *help(package = "crosstalk")* to see further contributors.
+
+To set up this functionality, we need to set up a **Shared Data Object**. This is based on the R6 system for object oriented programming in R.
+
+Note that we apply the specific plotly syntax, which requires the tilde ~ to specify variables, and uses the pipe %>% rather than the + operator like ggplot2.
